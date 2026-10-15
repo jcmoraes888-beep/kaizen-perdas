@@ -17,12 +17,12 @@ import os
 from typing import Literal
 
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, create_model
 
 load_dotenv()
 
 MODELO_PADRAO = "gpt-4o-mini"
-VERSAO_INSTRUCOES = "3"  # 3 = saída estruturada; aparece na tela e invalida o cache antigo
+VERSAO_INSTRUCOES = "4"  # 4 = causa atacada travada nos motivos registrados; invalida o cache antigo
 
 
 # ---------------------------------------------------------------------------
@@ -73,7 +73,7 @@ class CincoPorques(BaseModel):
 
 class Acao(BaseModel):
     acao: str
-    causa_atacada: str
+    causa_atacada: str = Field(description="Um dos motivos registrados para a máquina")
     tipo: TipoAcao
     responsavel: Responsavel
     prazo_dias: int = Field(description="Entre 7 e 30")
@@ -83,7 +83,7 @@ class Acompanhamento(BaseModel):
     indicador: str
     frequencia: str
     registro: str
-    criterio_sucesso: str
+    criterio_sucesso: str = Field(description="Meta numérica + período de sustentação, ex.: abaixo de 4,0% por 4 semanas seguidas")
 
 
 class A3(BaseModel):
@@ -127,8 +127,14 @@ Plano de ação:
 - Mecânica: manutenção, ajuste do ponto da máquina, checklist preventivo.
 - Treinamento é do Supervisor de produção ou do Líder de turno.
 - Prazos entre 7 e 30 dias.
+- A causa atacada é sempre um dos motivos registrados, escrito exatamente como nos dados
+  (falta de treinamento ou de padrão é a hipótese por trás do motivo, não a causa atacada).
+- Treinamento sozinho não resolve: para cada motivo com 10% ou mais da perda, inclua também
+  uma ação Mecânica ou de Material (ex.: verificar temperatura e resistência da selagem,
+  trocar borracha ou ferramenta desgastada, inspecionar a chapa no recebimento).
 
-Acompanhamento: indicador, frequência, como registrar (o próprio app de perdas) e critério de sucesso.
+Acompanhamento: indicador, frequência, como registrar (o próprio app de perdas) e critério de sucesso
+com meta numérica E período de sustentação (ex.: "perda abaixo de 4,0% por 4 semanas seguidas").
 
 Regras:
 - Escreva sempre "perda", nunca "prejuízo", para quantidades em kg.
@@ -151,7 +157,17 @@ def obter_modelo() -> str:
     return os.getenv("OPENAI_MODEL", MODELO_PADRAO)
 
 
-def gerar_a3(resumo: str) -> A3:
+def schema_da_maquina(motivos: list[str]) -> type[A3]:
+    """A3 com o campo causa_atacada limitado aos motivos registrados desta máquina.
+    O schema é montado na hora, então o modelo não consegue inventar outra causa."""
+    if not motivos:
+        return A3
+    opcoes = Literal[tuple(motivos)]  # type: ignore[valid-type]
+    AcaoMaquina = create_model("Acao", __base__=Acao, causa_atacada=(opcoes, ...))
+    return create_model("A3", __base__=A3, plano_acao=(list[AcaoMaquina], ...))
+
+
+def gerar_a3(resumo: str, motivos: list[str] | None = None) -> A3:
     """Envia o resumo da máquina para a OpenAI e devolve o A3 já validado."""
     from openai import OpenAI
 
@@ -169,7 +185,7 @@ def gerar_a3(resumo: str) -> A3:
             {"role": "system", "content": INSTRUCOES},
             {"role": "user", "content": resumo},
         ],
-        response_format=A3,  # o SDK converte a classe em JSON Schema com strict: true
+        response_format=schema_da_maquina(list(motivos or [])),  # vira JSON Schema strict
     )
     mensagem = resposta.choices[0].message
     if mensagem.refusal:

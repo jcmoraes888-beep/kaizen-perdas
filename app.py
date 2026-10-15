@@ -326,11 +326,11 @@ LIMITE_A3_POR_SESSAO = 5  # protege os créditos da API quando o app estiver pú
 
 
 @st.cache_data(ttl=24 * 3600, show_spinner=False)
-def a3_em_cache(resumo: str, versao: str) -> dict:
+def a3_em_cache(resumo: str, versao: str, motivos: tuple[str, ...]) -> dict:
     """Mesmos dados = mesmo A3, sem gastar crédito de novo (vale por 24 h).
     Guarda como dict para o cache não depender da classe Pydantic recarregada."""
     import ia_a3
-    return ia_a3.gerar_a3(resumo).model_dump()
+    return ia_a3.gerar_a3(resumo, list(motivos)).model_dump()
 
 
 def tela_diagnostico(inicio: date, fim: date) -> None:
@@ -422,7 +422,8 @@ def tela_diagnostico(inicio: date, fim: date) -> None:
     if st.button("Gerar A3 com IA", type="primary", disabled=not chave_ok or restantes <= 0):
         with st.spinner(f"Gerando o A3 da {maquina} com {ia_a3.obter_modelo()}..."):
             try:
-                st.session_state[chave_estado] = a3_em_cache(resumo, ia_a3.VERSAO_INSTRUCOES)
+                st.session_state[chave_estado] = a3_em_cache(resumo, ia_a3.VERSAO_INSTRUCOES,
+                                                           tuple(motivos["motivo"]))
                 st.session_state["a3_gerados"] = usados + 1
             except Exception as erro:  # mostra o erro sem derrubar o app
                 st.error(f"Não foi possível gerar o A3: {erro}")
