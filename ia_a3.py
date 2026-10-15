@@ -22,7 +22,7 @@ from pydantic import BaseModel, Field, create_model
 load_dotenv()
 
 MODELO_PADRAO = "gpt-4o-mini"
-VERSAO_INSTRUCOES = "5"  # 5 = Ishikawa separado em motivos/hipóteses e 5 porquês fixos; invalida o cache
+VERSAO_INSTRUCOES = "6"  # 6 = causa raiz é o 5º porquê; "Outros" vira ação de estratificação; invalida o cache
 
 
 # ---------------------------------------------------------------------------
@@ -76,8 +76,8 @@ class CincoPorques(BaseModel):
     porque_2: str = Field(description=_RESPOSTA + " — por que a resposta 1 acontece")
     porque_3: str = Field(description=_RESPOSTA + " — por que a resposta 2 acontece")
     porque_4: str = Field(description=_RESPOSTA + " — por que a resposta 3 acontece")
-    porque_5: str = Field(description=_RESPOSTA + " — por que a resposta 4 acontece")
-    causa_raiz: str
+    porque_5: str = Field(description=_RESPOSTA + " — por que a resposta 4 acontece. "
+                          "Esta é a CAUSA RAIZ: corrigível na máquina ou no padrão de trabalho")
 
     def porques(self) -> list[str]:
         return [self.porque_1, self.porque_2, self.porque_3, self.porque_4, self.porque_5]
@@ -130,7 +130,8 @@ prováveis de chão de fábrica (ex.: falta de padrão de regulagem, desgaste de
 temperatura de aquecimento, variação da chapa). Não repita um motivo como hipótese.
 
 5 Porquês: o problema é o motivo com maior kg. Preencha exatamente 5 respostas, cada uma
-explicando a anterior, sem escrever as perguntas. Os porquês ficam no nível da máquina,
+explicando POR QUE a anterior acontece (causa, nunca consequência), sem escrever as
+perguntas. A 5ª resposta é a causa raiz. Os porquês ficam no nível da máquina,
 do processo e da operação (como um supervisor experiente perguntaria no chão de fábrica),
 terminando numa causa raiz corrigível na própria máquina ou no padrão de trabalho
 (ex.: não existe folha de parâmetros, a ferramenta não tem troca preventiva).
@@ -143,6 +144,9 @@ Plano de ação:
 - Mecânica: manutenção, ajuste do ponto da máquina, checklist preventivo.
 - Treinamento é do Supervisor de produção ou do Líder de turno.
 - Prazos entre 7 e 30 dias.
+- "Outros" não entra no plano: o app acrescenta sozinho a ação de detalhar esses registros.
+- Cada ação ataca o motivo a que ela realmente se refere; não force uma ação num motivo só
+  para cobri-lo.
 - A causa atacada é sempre um dos motivos registrados, escrito exatamente como nos dados
   (falta de treinamento ou de padrão é a hipótese por trás do motivo, não a causa atacada).
 - Treinamento sozinho não resolve: para cada motivo com 10% ou mais da perda, inclua também
@@ -175,13 +179,26 @@ def obter_modelo() -> str:
     return os.getenv("OPENAI_MODEL", MODELO_PADRAO)
 
 
+def _eh_outros(motivo: str) -> bool:
+    return motivo.strip().lower() in {"outros", "outro", "outras"}
+
+
+def acao_outros(motivo: str) -> Acao:
+    """Ação fixa para 'Outros': não dá para atacar uma causa sem nome, então primeiro estratifica."""
+    return Acao(acao=f"Detalhar os registros de '{motivo}' no app de perdas, apontando o motivo real "
+                     "de cada perda, e revisar a lista de motivos se surgir um novo recorrente",
+                causa_atacada=motivo, tipo="Operacional", responsavel="Líder de turno", prazo_dias=7)
+
+
 def schema_da_maquina(motivos: list[str]) -> type[A3]:
     """A3 com o campo causa_atacada limitado aos motivos registrados desta máquina.
     O schema é montado na hora, então o modelo não consegue inventar outra causa."""
     if not motivos:
         return A3
     opcoes = Literal[tuple(motivos)]  # type: ignore[valid-type]
-    AcaoMaquina = create_model("Acao", __base__=Acao, causa_atacada=(opcoes, ...))
+    atacaveis = [m for m in motivos if not _eh_outros(m)] or motivos
+    opcoes_acao = Literal[tuple(atacaveis)]  # type: ignore[valid-type]
+    AcaoMaquina = create_model("Acao", __base__=Acao, causa_atacada=(opcoes_acao, ...))
     MotivoMaquina = create_model("MotivoPerda", __base__=MotivoPerda, motivo=(opcoes, ...))
     IshikawaMaquina = create_model("MotivoIshikawa", __base__=MotivoIshikawa, motivo=(opcoes, ...))
     SituacaoMaquina = create_model("SituacaoAtual", __base__=SituacaoAtual,
@@ -215,7 +232,11 @@ def gerar_a3(resumo: str, motivos: list[str] | None = None) -> A3:
     mensagem = resposta.choices[0].message
     if mensagem.refusal:
         raise RuntimeError(f"O modelo recusou gerar o A3: {mensagem.refusal}")
-    return mensagem.parsed
+    a3 = A3.model_validate(mensagem.parsed.model_dump())
+    for m in (motivos or []):
+        if _eh_outros(m):
+            a3.plano_acao.append(acao_outros(m))
+    return a3
 
 
 # ---------------------------------------------------------------------------
@@ -259,7 +280,7 @@ def para_markdown(a3: A3) -> str:
     p = a3.cinco_porques
     linhas += ["", "## 5. 5 Porquês da causa principal", f"**Problema:** {p.problema}", ""]
     linhas += [f"{i}. Por quê? {q}" for i, q in enumerate(p.porques(), 1)]
-    linhas += ["", f"**Causa raiz:** {p.causa_raiz} *(hipótese a validar com o operador)*",
+    linhas += ["", f"**Causa raiz:** {p.porque_5} *(hipótese a validar com o operador)*",
                "", "## 6. Plano de ação",
                "| Ação | Causa atacada | Tipo | Responsável | Prazo |", "|---|---|---|---|---|"]
     linhas += [f"| {x.acao} | {x.causa_atacada} | {x.tipo} | {x.responsavel} | {x.prazo_dias} dias |"
