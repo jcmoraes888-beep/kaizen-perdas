@@ -22,7 +22,7 @@ from pydantic import BaseModel, Field, create_model
 load_dotenv()
 
 MODELO_PADRAO = "gpt-4o-mini"
-VERSAO_INSTRUCOES = "4"  # 4 = causa atacada travada nos motivos registrados; invalida o cache antigo
+VERSAO_INSTRUCOES = "5"  # 5 = Ishikawa separado em motivos/hipóteses e 5 porquês fixos; invalida o cache
 
 
 # ---------------------------------------------------------------------------
@@ -57,18 +57,30 @@ class Meta(BaseModel):
     conta: str = Field(description="A conta que leva ao ganho, mostrada passo a passo")
 
 
-class CausaIshikawa(BaseModel):
+class MotivoIshikawa(BaseModel):
     categoria: Categoria6M
-    causa: str
-    kg: float | None = Field(description="kg do motivo registrado; null para hipóteses")
-    pct: float | None = Field(description="% do motivo registrado; null para hipóteses")
-    hipotese: bool = Field(description="true se for causa provável ainda a validar no chão de fábrica")
+    motivo: str = Field(description="Um motivo registrado, escrito exatamente como nos dados")
+
+
+class Hipotese(BaseModel):
+    categoria: Categoria6M
+    causa: str = Field(description="Causa provável de chão de fábrica, ainda a validar")
+
+
+_RESPOSTA = "Só a resposta, sem repetir a pergunta 'Por quê?'"
 
 
 class CincoPorques(BaseModel):
     problema: str = Field(description="A causa principal (motivo com maior kg)")
-    porques: list[str] = Field(description="Os porquês em sequência, normalmente 5")
+    porque_1: str = Field(description=_RESPOSTA + " — por que o problema acontece")
+    porque_2: str = Field(description=_RESPOSTA + " — por que a resposta 1 acontece")
+    porque_3: str = Field(description=_RESPOSTA + " — por que a resposta 2 acontece")
+    porque_4: str = Field(description=_RESPOSTA + " — por que a resposta 3 acontece")
+    porque_5: str = Field(description=_RESPOSTA + " — por que a resposta 4 acontece")
     causa_raiz: str
+
+    def porques(self) -> list[str]:
+        return [self.porque_1, self.porque_2, self.porque_3, self.porque_4, self.porque_5]
 
 
 class Acao(BaseModel):
@@ -91,7 +103,8 @@ class A3(BaseModel):
     contexto: str = Field(description="Duas frases: o que a máquina faz e por que foi escolhida")
     situacao_atual: SituacaoAtual
     meta: Meta
-    ishikawa: list[CausaIshikawa]
+    ishikawa_motivos: list[MotivoIshikawa] = Field(description="Cada motivo registrado, uma vez, na sua categoria 6M")
+    ishikawa_hipoteses: list[Hipotese]
     cinco_porques: CincoPorques
     plano_acao: list[Acao]
     acompanhamento: Acompanhamento
@@ -111,15 +124,18 @@ com kg e %. Se a diferença entre turnos for maior que 20%, descreva em destaque
 Meta: perda abaixo da meta, com o ganho em kg e R$ no período se a meta for atingida.
 Use o valor de ganho já calculado nos dados e mostre a conta.
 
-Ishikawa (6M): coloque cada motivo registrado na categoria certa, com kg e %
-(hipotese = false). Acrescente causas prováveis de chão de fábrica (ex.: falta de padrão
-de regulagem, desgaste de ferramenta, temperatura de aquecimento, variação da chapa)
-com kg e pct nulos e hipotese = true. Não crie itens vazios só para preencher categorias.
+Ishikawa (6M): em ishikawa_motivos, coloque cada motivo registrado (com o nome exato
+dos dados, sem reescrever) na categoria certa. Em ishikawa_hipoteses, acrescente causas
+prováveis de chão de fábrica (ex.: falta de padrão de regulagem, desgaste de ferramenta,
+temperatura de aquecimento, variação da chapa). Não repita um motivo como hipótese.
 
-5 Porquês: o problema é o motivo com maior kg. Os porquês ficam no nível da máquina,
+5 Porquês: o problema é o motivo com maior kg. Preencha exatamente 5 respostas, cada uma
+explicando a anterior, sem escrever as perguntas. Os porquês ficam no nível da máquina,
 do processo e da operação (como um supervisor experiente perguntaria no chão de fábrica),
-terminando numa causa raiz corrigível na própria máquina ou no padrão de trabalho.
-Não termine em causas genéricas de gestão (falta de planejamento, equipe sobrecarregada).
+terminando numa causa raiz corrigível na própria máquina ou no padrão de trabalho
+(ex.: não existe folha de parâmetros, a ferramenta não tem troca preventiva).
+Não termine em causas de gestão ou de pessoas (supervisão não priorizou, falta de
+planejamento, equipe sobrecarregada, falta de comprometimento).
 
 Plano de ação:
 - Pelo menos uma ação para cada motivo que represente 10% ou mais da perda.
@@ -138,6 +154,8 @@ com meta numérica E período de sustentação (ex.: "perda abaixo de 4,0% por 4
 
 Regras:
 - Escreva sempre "perda", nunca "prejuízo", para quantidades em kg.
+- Nos textos, use números no padrão brasileiro: vírgula decimal e ponto de milhar,
+  com "R$" antes do valor (ex.: 174,0 kg; R$ 2.772,06; 8,76%).
 - Não invente números que não estejam nos dados ou não venham de uma conta mostrada.
 - Seja específico para a máquina e para os motivos dela.
 """
@@ -164,7 +182,14 @@ def schema_da_maquina(motivos: list[str]) -> type[A3]:
         return A3
     opcoes = Literal[tuple(motivos)]  # type: ignore[valid-type]
     AcaoMaquina = create_model("Acao", __base__=Acao, causa_atacada=(opcoes, ...))
-    return create_model("A3", __base__=A3, plano_acao=(list[AcaoMaquina], ...))
+    MotivoMaquina = create_model("MotivoPerda", __base__=MotivoPerda, motivo=(opcoes, ...))
+    IshikawaMaquina = create_model("MotivoIshikawa", __base__=MotivoIshikawa, motivo=(opcoes, ...))
+    SituacaoMaquina = create_model("SituacaoAtual", __base__=SituacaoAtual,
+                                   motivos=(list[MotivoMaquina], ...))
+    return create_model("A3", __base__=A3,
+                        situacao_atual=(SituacaoMaquina, ...),
+                        ishikawa_motivos=(list[IshikawaMaquina], ...),
+                        plano_acao=(list[AcaoMaquina], ...))
 
 
 def gerar_a3(resumo: str, motivos: list[str] | None = None) -> A3:
@@ -219,19 +244,21 @@ def para_markdown(a3: A3) -> str:
                "", f"Ganho estimado no período: **{_n(m.ganho_kg)} kg** e **R$ {_n(m.ganho_rs, 2)}**.",
                "", f"Conta: {m.conta}",
                "", "## 4. Análise de causas (Ishikawa)"]
+    numeros = {x.motivo: x for x in s.motivos}  # kg e % vêm da situação atual
     for cat in ["Método", "Máquina", "Material", "Mão de obra", "Medição", "Meio ambiente"]:
-        itens = [c for c in a3.ishikawa if c.categoria == cat]
-        if not itens:
+        registrados = [c for c in a3.ishikawa_motivos if c.categoria == cat]
+        hipoteses = [h for h in a3.ishikawa_hipoteses if h.categoria == cat]
+        if not registrados and not hipoteses:
             continue
         linhas += ["", f"**{cat}**", ""]
-        for c in itens:
-            numeros = f" — {_n(c.kg)} kg ({_n(c.pct, 0)}%)" if c.kg is not None and c.pct is not None else ""
-            marca = " *(hipótese a validar)*" if c.hipotese else ""
-            linhas.append(f"- {c.causa}{numeros}{marca}")
+        for c in registrados:
+            x = numeros.get(c.motivo)
+            linhas.append(f"- {c.motivo}" + (f" — {_n(x.kg)} kg ({_n(x.pct, 0)}%)" if x else ""))
+        linhas += [f"- {h.causa} *(hipótese a validar)*" for h in hipoteses]
 
     p = a3.cinco_porques
     linhas += ["", "## 5. 5 Porquês da causa principal", f"**Problema:** {p.problema}", ""]
-    linhas += [f"{i}. Por quê? {q}" for i, q in enumerate(p.porques, 1)]
+    linhas += [f"{i}. Por quê? {q}" for i, q in enumerate(p.porques(), 1)]
     linhas += ["", f"**Causa raiz:** {p.causa_raiz} *(hipótese a validar com o operador)*",
                "", "## 6. Plano de ação",
                "| Ação | Causa atacada | Tipo | Responsável | Prazo |", "|---|---|---|---|---|"]

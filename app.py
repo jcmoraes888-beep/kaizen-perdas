@@ -418,7 +418,7 @@ def tela_diagnostico(inicio: date, fim: date) -> None:
     chave_estado = f"a3_{maquina}_{inicio}_{fim}"
     usados = st.session_state.get("a3_gerados", 0)
     restantes = LIMITE_A3_POR_SESSAO - usados
-    st.caption(f"Limite de demonstração: {restantes} de {LIMITE_A3_POR_SESSAO} A3 nesta sessão.")
+    aviso_limite = st.empty()  # preenchido depois do botão, já com o contador atualizado
     if st.button("Gerar A3 com IA", type="primary", disabled=not chave_ok or restantes <= 0):
         with st.spinner(f"Gerando o A3 da {maquina} com {ia_a3.obter_modelo()}..."):
             try:
@@ -427,6 +427,9 @@ def tela_diagnostico(inicio: date, fim: date) -> None:
                 st.session_state["a3_gerados"] = usados + 1
             except Exception as erro:  # mostra o erro sem derrubar o app
                 st.error(f"Não foi possível gerar o A3: {erro}")
+
+    restantes = LIMITE_A3_POR_SESSAO - st.session_state.get("a3_gerados", 0)
+    aviso_limite.caption(f"Limite de demonstração: {restantes} de {LIMITE_A3_POR_SESSAO} A3 nesta sessão.")
 
     if chave_estado in st.session_state:
         try:
