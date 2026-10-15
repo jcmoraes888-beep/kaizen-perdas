@@ -176,6 +176,12 @@ def obter_chave() -> str | None:
 
 
 def obter_modelo() -> str:
+    try:
+        import streamlit as st
+        if "OPENAI_MODEL" in st.secrets:
+            return str(st.secrets["OPENAI_MODEL"]).strip()
+    except Exception:
+        pass  # sem secrets.toml: segue para o .env
     return os.getenv("OPENAI_MODEL", MODELO_PADRAO)
 
 
