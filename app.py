@@ -326,10 +326,11 @@ LIMITE_A3_POR_SESSAO = 5  # protege os créditos da API quando o app estiver pú
 
 
 @st.cache_data(ttl=24 * 3600, show_spinner=False)
-def a3_em_cache(resumo: str, versao: str) -> str:
-    """Mesmos dados = mesmo A3, sem gastar crédito de novo (vale por 24 h)."""
+def a3_em_cache(resumo: str, versao: str) -> dict:
+    """Mesmos dados = mesmo A3, sem gastar crédito de novo (vale por 24 h).
+    Guarda como dict para o cache não depender da classe Pydantic recarregada."""
     import ia_a3
-    return ia_a3.gerar_a3(resumo)
+    return ia_a3.gerar_a3(resumo).model_dump()
 
 
 def tela_diagnostico(inicio: date, fim: date) -> None:
@@ -427,10 +428,22 @@ def tela_diagnostico(inicio: date, fim: date) -> None:
                 st.error(f"Não foi possível gerar o A3: {erro}")
 
     if chave_estado in st.session_state:
-        a3 = st.session_state[chave_estado]
-        st.markdown(a3.replace("$", "\\$"))  # evita que "R$" vire fórmula LaTeX
-        st.download_button("Baixar A3 (.md)", a3, file_name=f"A3_{maquina.replace(' ', '_')}.md",
-                           mime="text/markdown")
+        try:
+            a3 = ia_a3.A3.model_validate(st.session_state[chave_estado])
+        except Exception:  # resultado de uma versão antiga na sessão: pede para gerar de novo
+            del st.session_state[chave_estado]
+            st.info("O formato do A3 mudou. Clique em Gerar A3 com IA novamente.")
+            return
+        texto = ia_a3.para_markdown(a3)
+        st.markdown(texto.replace("$", "\\$"))  # evita que "R$" vire fórmula LaTeX
+
+        nome = f"A3_{maquina.replace(' ', '_')}"
+        b1, b2, b3 = st.columns(3)
+        b1.download_button("Baixar A3 (.md)", texto, file_name=f"{nome}.md", mime="text/markdown")
+        b2.download_button("Plano de ação (.csv)", ia_a3.plano_para_csv(a3).encode("utf-8-sig"),
+                           file_name=f"{nome}_plano_acao.csv", mime="text/csv")
+        b3.download_button("Dados do A3 (.json)", a3.model_dump_json(indent=2),
+                           file_name=f"{nome}.json", mime="application/json")
 
 
 # ---------------------------------------------------------------------------
